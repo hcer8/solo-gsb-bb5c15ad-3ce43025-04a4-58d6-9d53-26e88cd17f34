@@ -14,6 +14,8 @@ const state = {
   editingStepReagents: [],
   customCats: new Set(),
   report: null,
+  runs: [],
+  diff: null,
 };
 
 /* ---------------- API ---------------- */
@@ -444,7 +446,7 @@ function renderReport(report, { editable = false, container = $("#reportWrap") }
     });
   });
 
-  wrap.scrollIntoView({ behavior: "smooth", block: "start" });
+  wrap.scrollIntoView?.({ behavior: "smooth", block: "start" });
 }
 
 function renderTimelineItem(t) {
@@ -498,7 +500,10 @@ function openModal(html) {
   const closeBtn = $(".modal-close", $("#modalBox"));
   if (closeBtn) closeBtn.addEventListener("click", closeModal);
 }
-function closeModal() { $("#modalBackdrop").classList.add("hidden"); }
+function closeModal() {
+  $("#modalBackdrop").classList.add("hidden");
+  $("#modalBox").classList.remove("modal-wide");
+}
 $("#modalBackdrop").addEventListener("click", (e) => { if (e.target === $("#modalBackdrop")) closeModal(); });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal(); });
 
@@ -933,28 +938,122 @@ function renderGraph() {
 
 /* ---------------- 推演记录 ---------------- */
 
+const statusMeta = { danger: ["严重", "high"], warning: ["警示", "medium"], safe: ["安全", "ok"] };
+const stateBadge = {
+  ok: ["相容", "ok"], warning: ["警示", "medium"], danger: ["严重", "high"], blocked: ["阻断", "blocked"],
+};
+
 async function loadRuns() {
-  if (!$("#tab-runs").classList.contains("active")) return;
-  const runs = await api("/api/runs");
+  state.runs = await api("/api/runs");
+  renderRunList();
+  renderDiffPickers();
+}
+
+function runOptionLabel(r) {
+  return `#${r.id} · ${r.plan_name || "（已删除方案）"} · ${statusMeta[r.status]?.[0] || r.status} · 规则 ${r.rule_revision || "-"} · ${fmtTime(r.created_at)}`;
+}
+
+function renderDiffPickers() {
+  const baseSel = $("#diffBase");
+  const targetSel = $("#diffTarget");
+  if (!baseSel || !targetSel) return;
+  // 按方案分组渲染，便于识别同一方案的记录
+  const groups = new Map();
+  state.runs.forEach((r) => {
+    const key = r.plan_id === null || r.plan_id === undefined ? -1 : r.plan_id;
+    if (!groups.has(key)) groups.set(key, { name: r.plan_id === null ? "未关联方案" : r.plan_name, runs: [] });
+    groups.get(key).runs.push(r);
+  });
+  const buildOptions = (sel) => {
+    const cur = sel.value;
+    const parts = ['<option value="">— 请选择记录 —</option>'];
+    [...groups.entries()]
+      .sort((a, b) => (a[0] === -1 ? 1 : b[0] === -1 ? -1 : a[0] - b[0]))
+      .forEach(([pid, g]) => {
+        parts.push(`<optgroup label="${escapeHtml(g.name || `方案 #${pid}`)}">`);
+        g.runs.forEach((r) => {
+          parts.push(`<option value="${r.id}" data-plan="${r.plan_id ?? ""}">${escapeHtml(runOptionLabel(r))}</option>`);
+        });
+        parts.push("</optgroup>");
+      });
+    sel.innerHTML = parts.join("");
+    if (cur && state.runs.some((r) => String(r.id) === String(cur))) sel.value = String(cur);
+  };
+  buildOptions(baseSel);
+  buildOptions(targetSel);
+}
+
+function pickRunForDiff(r) {
+  const baseSel = $("#diffBase");
+  const targetSel = $("#diffTarget");
+  if (r.plan_id === null) { toast("该记录未关联已保存方案，不能参与版本差异比较", true); return; }
+  if (!baseSel.value) {
+    baseSel.value = String(r.id);
+  } else if (String(baseSel.value) === String(r.id)) {
+    targetSel.value = String(r.id);
+  } else if (!targetSel.value || String(targetSel.value) === String(r.id)) {
+    targetSel.value = String(r.id);
+  } else {
+    // 两个槽都被占用：把基准替换为当前点击记录，原对照保留
+    baseSel.value = String(r.id);
+  }
+  toast("已选入差异比较，仅同方案记录可比较");
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+$("#btnDiffSwap")?.addEventListener("click", () => {
+  const baseSel = $("#diffBase");
+  const targetSel = $("#diffTarget");
+  const b = baseSel.value;
+  baseSel.value = targetSel.value;
+  targetSel.value = b;
+});
+
+$("#btnRunDiff")?.addEventListener("click", async () => {
+  const baseId = $("#diffBase").value;
+  const targetId = $("#diffTarget").value;
+  if (!baseId || !targetId) { toast("请先选择两条同方案的推演记录", true); return; }
+  if (baseId === targetId) { toast("两条记录不能相同", true); return; }
+  try {
+    const diff = await api(`/api/runs/diff?base_id=${baseId}&target_id=${targetId}`);
+    state.diff = diff;
+    renderDiff(diff);
+    $("#btnExportDiff").classList.remove("hidden");
+  } catch (err) { toast(err.message, true); }
+});
+
+$("#btnExportDiff")?.addEventListener("click", async () => {
+  // 始终导出当前已展示的差异（与最后一次成功比较一致），避免下拉选择已改但结果未刷新
+  if (!state.diff) { toast("请先执行版本差异比较", true); return; }
+  const baseId = state.diff.base.run_id;
+  const targetId = state.diff.target.run_id;
+  try {
+    const data = await api(`/api/runs/diff/export?base_id=${baseId}&target_id=${targetId}`);
+    downloadJson(data, `runs-${baseId}-vs-${targetId}-diff.json`);
+    toast("已导出版本差异 JSON");
+  } catch (err) { toast(err.message, true); }
+});
+
+function renderRunList() {
   const ul = $("#runList");
   ul.innerHTML = "";
-  if (!runs.length) {
+  if (!state.runs.length) {
     ul.innerHTML = '<p class="hint">暂无推演记录。在「配液方案」中执行推演后会自动保存。</p>';
     return;
   }
-  const stMap = { danger: ["严重", "high"], warning: ["警示", "medium"], safe: ["安全", "ok"] };
-  runs.forEach((r) => {
-    const [label, cls] = stMap[r.status] || ["—", "blocked"];
+  state.runs.forEach((r) => {
+    const [label, cls] = statusMeta[r.status] || ["—", "blocked"];
     const li = document.createElement("li");
     li.className = "item";
     li.innerHTML = `
       <div class="item-title"><span class="badge badge-${cls}">${label}</span>
-        ${escapeHtml(r.plan_name)} <span class="item-meta">#${r.id}</span></div>
+        ${escapeHtml(r.plan_name || "（方案已删除）")} <span class="item-meta">#${r.id}</span></div>
       <div class="item-meta">${fmtTime(r.created_at)} · 规则图版本 ${escapeHtml(r.rule_revision || "-")}</div>
     `;
     const actions = document.createElement("div");
     actions.className = "item-actions";
     actions.append(
+      actionBtn("差异", "btn-small", () => pickRunForDiff(r)),
       actionBtn("查看", "btn-small", async () => {
         const report = await api(`/api/runs/${r.id}`);
         const host = $("#runDetail");
@@ -975,6 +1074,244 @@ async function loadRuns() {
     li.appendChild(actions);
     ul.appendChild(li);
   });
+}
+
+/* ---------------- 版本差异视图 ---------------- */
+
+const DIFF_FILTERS = [
+  { key: "all", label: "全部" },
+  { key: "changed", label: "仅变化" },
+  { key: "added", label: "🟢 新增" },
+  { key: "removed", label: "🔴 消失" },
+  { key: "severity", label: "🔶 级别变化" },
+  { key: "basis", label: "📝 依据变化" },
+  { key: "unchanged", label: "⚪ 一致" },
+];
+
+const basisFieldLabels = {
+  title: "规则标题", reaction: "反应方程式", rationale: "机理解释", references: "参考文献",
+  incoming_category: "新加入类别", existing_category: "已有类别", match_direction: "匹配方向",
+  rule_directional: "规则方向", incoming_reagent: "新加入试剂", existing_reagent: "已有试剂",
+  incoming_step: "加入步骤", existing_step: "冲突步骤",
+};
+
+function renderDiff(diff) {
+  const host = $("#diffDetail");
+  const s = diff.summary;
+  const c = s.finding_changes;
+  host.innerHTML = `
+    <div class="card">
+      <div class="card-head">
+        <h2>🔀 版本差异 · ${escapeHtml(diff.plan_name)}</h2>
+        <span class="item-meta">基准 #${diff.base.run_id} → 对照 #${diff.target.run_id}</span>
+      </div>
+      <div class="diff-sides">
+        ${renderDiffSide(diff.base)}
+        <div class="diff-arrow-big">→</div>
+        ${renderDiffSide(diff.target)}
+      </div>
+      ${renderDiffSummary(s)}
+    </div>
+    <div class="card">
+      <div class="card-head">
+        <h2>命中差异列表</h2>
+        <div class="diff-filters" id="diffFilters">
+          ${DIFF_FILTERS.map((f, i) => `<button type="button" class="btn btn-small diff-filter${i === 1 ? " active" : ""}" data-filter="${f.key}">${f.label}</button>`).join("")}
+          <input type="search" id="diffSearch" class="search" placeholder="规则 ID / 试剂 / 标题…" />
+        </div>
+      </div>
+      <p class="hint" id="diffCounts">
+        🟢 新增 ${c.added} ｜ 🔴 消失 ${c.removed} ｜ 🔶 级别变化 ${c.severity} ｜ 📝 依据变化 ${c.basis} ｜ ⚪ 一致 ${c.unchanged}
+      </p>
+      <div class="finding-list" id="diffFindingList"></div>
+    </div>`;
+
+  $$(".diff-filter", host).forEach((btn) => {
+    btn.addEventListener("click", () => {
+      $$(".diff-filter", host).forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      renderDiffFindings(diff);
+    });
+  });
+  $("#diffSearch", host).addEventListener("input", () => renderDiffFindings(diff));
+  renderDiffFindings(diff);
+  host.scrollIntoView?.({ behavior: "smooth", block: "start" });
+}
+
+function renderDiffSide(side) {
+  const [label, cls] = statusMeta[side.status] || ["—", "blocked"];
+  return `
+    <div class="diff-side">
+      <div class="item-title">记录 #${side.run_id} <span class="badge badge-${cls}">${label}</span></div>
+      <div class="item-meta">${fmtTime(side.created_at)}</div>
+      <div class="item-meta">规则图版本 <b>${escapeHtml(side.rule_revision || "-")}</b></div>
+    </div>`;
+}
+
+function renderSetDiff(title, d) {
+  const fmt = (arr) => arr.length ? arr.map((x) => `第 ${x} 步`).join("、") : "无";
+  return `
+    <div class="diff-cell">
+      <div class="m-k">${title}</div>
+      <div class="item-meta">基准：${fmt(d.base)}</div>
+      <div class="item-meta">对照：${fmt(d.target)}</div>
+      ${d.added.length ? `<div class="diff-add">＋ ${d.added.map((x) => `第 ${x} 步`).join("、")}</div>` : ""}
+      ${d.removed.length ? `<div class="diff-rm">－ ${d.removed.map((x) => `第 ${x} 步`).join("、")}</div>` : ""}
+      ${!d.added.length && !d.removed.length ? '<div class="item-meta diff-same">— 无变化 —</div>' : ""}
+    </div>`;
+}
+
+function renderDiffSummary(s) {
+  const st = s.status;
+  const statusLine = st.changed
+    ? `🔀 <span class="badge badge-${statusMeta[st.base]?.[1] || "blocked"}">${statusMeta[st.base]?.[0] || st.base}</span>
+       → <span class="badge badge-${statusMeta[st.target]?.[1] || "blocked"}">${statusMeta[st.target]?.[0] || st.target}</span>`
+    : `⚪ <span class="badge badge-${statusMeta[st.target]?.[1] || "blocked"}">${statusMeta[st.target]?.[0] || st.target}</span>（无变化）`;
+
+  const rev = s.rule_revision;
+  const revLine = rev.changed
+    ? `🔀 <b>${escapeHtml(rev.base || "-")}</b> → <b>${escapeHtml(rev.target || "-")}</b>`
+    : `⚪ ${escapeHtml(rev.target || "-")}`;
+
+  const fd = s.first_danger;
+  let dangerLine;
+  if (fd.change === "none") dangerLine = '⚪ 两次均无首次危险 <span class="badge badge-ok">无变化</span>';
+  else if (fd.change === "added") dangerLine = `🟢 对照新增首次危险：第 ${fd.target.step} 步 [${escapeHtml(fd.target.rule_id)}] ${escapeHtml(fd.target.title)}`;
+  else if (fd.change === "removed") dangerLine = `🔴 对照已消除首次危险（基准在第 ${fd.base.step} 步 [${escapeHtml(fd.base.rule_id)}]）`;
+  else dangerLine = `🔀 首次危险变化：基准第 ${fd.base.step} 步 [${escapeHtml(fd.base.rule_id)}] → 对照第 ${fd.target.step} 步 [${escapeHtml(fd.target.rule_id)}]`;
+
+  const countsRows = s.counts.map((x) => `
+    <tr class="${x.delta !== 0 ? "diff-row-chg" : ""}">
+      <td>${x.label}</td><td>${x.base}</td><td>${x.target}</td>
+      <td>${x.delta === 0 ? "—" : (x.delta > 0 ? `<span class="diff-add">＋${x.delta}</span>` : `<span class="diff-rm">${x.delta}</span>`)}</td>
+    </tr>`).join("");
+
+  return `
+    <div class="diff-summary-grid">
+      <div class="diff-cell"><div class="m-k">总体状态</div><div>${statusLine}</div></div>
+      <div class="diff-cell"><div class="m-k">规则图版本</div><div>${revLine}</div></div>
+      <div class="diff-cell diff-cell-wide"><div class="m-k">首次危险</div><div>${dangerLine}</div></div>
+      ${renderSetDiff("受影响步骤（发生反应 + 被阻断）", s.affected_steps)}
+      ${renderSetDiff("阻断步骤（中止后未执行）", s.blocked_steps)}
+      <div class="diff-cell diff-cell-wide">
+        <div class="m-k">命中计数</div>
+        <table class="grid diff-count-table">
+          <thead><tr><th>指标</th><th>基准</th><th>对照</th><th>增减</th></tr></thead>
+          <tbody>${countsRows}</tbody>
+        </table>
+      </div>
+      <div class="diff-cell diff-cell-wide">
+        <div class="m-k">逐步状态对齐</div>
+        ${renderStepAlign(s.steps)}
+      </div>
+    </div>`;
+}
+
+function renderStepAlign(steps) {
+  const rows = steps.items.map((it) => {
+    const badge = (state) => {
+      if (!state) return '<span class="item-meta">—</span>';
+      const [label, cls] = stateBadge[state] || [state, "blocked"];
+      return `<span class="badge badge-${cls}">${label}</span>`;
+    };
+    const mark = { added: '<span class="diff-add">新增步骤</span>', removed: '<span class="diff-rm">消失步骤</span>', changed: '<span class="badge badge-medium">状态变化</span>', same: "" }[it.change];
+    return `<tr class="${it.change !== "same" ? "diff-row-chg" : ""}">
+      <td>第 ${it.step} 步</td><td>${badge(it.base_state)}</td><td>${badge(it.target_state)}</td><td>${mark}</td>
+    </tr>`;
+  }).join("");
+  return `<table class="grid diff-count-table">
+    <thead><tr><th>步骤</th><th>基准状态</th><th>对照状态</th><th></th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+function renderDiffFindings(diff) {
+  const box = $("#diffFindingList");
+  if (!box) return;
+  const filter = ($$("#diffFilters .diff-filter.active")[0]?.dataset.filter) || "changed";
+  const q = ($("#diffSearch").value || "").toLowerCase();
+  const items = diff.findings.filter((e) => {
+    if (filter === "changed" && e.change === "unchanged") return false;
+    if (filter !== "all" && filter !== "changed" && e.change !== filter) return false;
+    if (q) {
+      const hay = [e.rule_id, e.base?.title, e.target?.title, e.base?.incoming_reagent,
+        e.target?.incoming_reagent, e.base?.existing_reagent, e.target?.existing_reagent,
+        e.base?.reaction, e.target?.reaction]
+        .filter(Boolean).join(" ").toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+  box.innerHTML = items.length
+    ? items.map(renderDiffFinding).join("")
+    : '<p class="hint">没有符合筛选条件的差异条目。</p>';
+  $$(".diff-finding", box).forEach((el) => {
+    el.addEventListener("click", () => {
+      const e = diff.findings.find((x) => x._id === el.dataset.id);
+      if (e) openDiffFindingModal(e, diff);
+    });
+  });
+}
+
+let __diffSeq = 0;
+function renderDiffFinding(e) {
+  e._id = e._id ?? `d${++__diffSeq}`;
+  const cur = e.target || e.base;
+  const sevHtml = (s) => s ? `<span class="badge badge-${s}">${sevLabel[s]}</span>` : '<span class="item-meta">无</span>';
+  let head;
+  if (e.change === "added") head = `<span class="badge badge-ok diff-tag">🟢 新增命中</span>`;
+  else if (e.change === "removed") head = `<span class="badge badge-blocked diff-tag">🔴 消失命中</span>`;
+  else if (e.change === "severity") head = `<span class="badge badge-medium diff-tag">🔶 ${sevHtml(e.base_severity)} → ${sevHtml(e.target_severity)}</span>`;
+  else if (e.change === "basis") head = '<span class="badge badge-low diff-tag">📝 反应依据变化</span>';
+  else head = '<span class="badge badge-blocked diff-tag">⚪ 一致</span>';
+
+  const stepLine = `第 ${e.incoming_step} 步「${escapeHtml(cur.incoming_reagent || "-")}」 × 第 ${e.existing_step} 步「${escapeHtml(cur.existing_reagent || "-")}」`;
+  const fieldTags = e.changed_fields.length
+    ? `<div class="item-meta">变化字段：${e.changed_fields.map((f) => `<span class="badge badge-low">${basisFieldLabels[f] || f}</span>`).join(" ")}</div>`
+    : "";
+  return `
+    <div class="finding-card diff-finding ${e.target_severity || e.base_severity || ""}" data-id="${e._id}">
+      <div class="fc-title">${head} <b>[${escapeHtml(e.rule_id || "-")}]</b> ${escapeHtml(cur.title || "")}</div>
+      <div class="fc-meta">${stepLine}</div>
+      <div class="fc-meta">${escapeHtml(cur.reaction || "")} · 点击查看两侧反应依据对比</div>
+      ${fieldTags}
+    </div>`;
+}
+
+function openDiffFindingModal(e, diff) {
+  const row = (label, a, b) => `
+    <tr><td class="m-k">${label}</td>
+      <td>${a ?? "—"}</td><td>${b ?? "—"}</td></tr>`;
+  const a = e.base, b = e.target;
+  const sev = (s) => s ? `<span class="badge badge-${s}">${sevLabel[s]}</span>` : "—";
+  const refs = (arr) => (arr && arr.length) ? arr.map((x) => `· ${escapeHtml(x)}`).join("<br>") : "—";
+  openModal(`
+    <button class="btn btn-ghost modal-close">✕ 关闭</button>
+    <h3>${e.change_label} · [${escapeHtml(e.rule_id || "-")}] ${escapeHtml((b || a).title || "")}</h3>
+    <div class="item-meta">基准记录 #${diff.base.run_id}（规则 ${escapeHtml(diff.base.rule_revision || "-")}）
+      → 对照记录 #${diff.target.run_id}（规则 ${escapeHtml(diff.target.rule_revision || "-")}）</div>
+    <table class="grid diff-modal-table">
+      <thead><tr><th></th><th>基准（旧）</th><th>对照（新）</th></tr></thead>
+      <tbody>
+        ${row("严重级别", a ? sev(a.severity) : "—", b ? sev(b.severity) : "—")}
+        ${row("步骤", a ? `第 ${a.incoming_step} 步加入「${escapeHtml(a.incoming_reagent)}」` : "—",
+                  b ? `第 ${b.incoming_step} 步加入「${escapeHtml(b.incoming_reagent)}」` : "—")}
+        ${row("冲突对象", a ? `第 ${a.existing_step} 步「${escapeHtml(a.existing_reagent)}」` : "—",
+                  b ? `第 ${b.existing_step} 步「${escapeHtml(b.existing_reagent)}」` : "—")}
+        ${row("类别对", a ? `${escapeHtml(catLabel(a.incoming_category))} × ${escapeHtml(catLabel(a.existing_category))}` : "—",
+                  b ? `${escapeHtml(catLabel(b.incoming_category))} × ${escapeHtml(catLabel(b.existing_category))}` : "—")}
+        ${row("反应方程式", a ? `<span class="m-eq">${escapeHtml(a.reaction)}</span>` : "—",
+                  b ? `<span class="m-eq">${escapeHtml(b.reaction)}</span>` : "—")}
+        ${row("机理解释", a ? escapeHtml(a.rationale).replace(/\n/g, "<br>") : "—",
+                  b ? escapeHtml(b.rationale).replace(/\n/g, "<br>") : "—")}
+        ${row("参考文献", a ? refs(a.references) : "—", b ? refs(b.references) : "—")}
+        ${row("匹配方向", a ? `${a.match_direction === "incoming->existing" ? "新加入 → 已存在" : "已存在 → 新加入"}${a.rule_directional ? "（有向）" : "（无向）"}` : "—",
+                  b ? `${b.match_direction === "incoming->existing" ? "新加入 → 已存在" : "已存在 → 新加入"}${b.rule_directional ? "（有向）" : "（无向）"}` : "—")}
+      </tbody>
+    </table>
+    ${e.changed_fields.length ? `<p class="hint">变化字段：${e.changed_fields.map((f) => basisFieldLabels[f] || f).join("、")}</p>` : ""}
+  `);
+  $("#modalBox").classList.add("modal-wide");
 }
 
 /* ---------------- 工具 ---------------- */

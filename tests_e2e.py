@@ -200,5 +200,104 @@ s, _ = call("DELETE", "/api/rules/C001")
 s2, _ = call("DELETE", "/api/rules/C002")
 check("自定义规则可删除", s == 204 and s2 == 204, (s, s2))
 
+# ---------- 8. 版本差异（同一方案两次记录对齐比较） ----------
+print("【场景8】推演记录版本差异")
+s, p3 = call("POST", "/api/plans", {
+    "name": "测试-版本差异方案",
+    "steps": [
+        {"order_index": 0, "reagent_name": "叠氮化钠X", "categories": ["azide"]},
+        {"order_index": 1, "reagent_name": "稀盐酸X", "categories": ["strong_acid"]},
+        {"order_index": 2, "reagent_name": "水", "categories": []},
+    ],
+})
+pid3 = p3["id"]
+
+s, _ = call("POST", "/api/rules", {
+    "id": "C010", "source": "azide", "target": "strong_acid",
+    "directional": False, "severity": "high",
+    "title": "叠氮化物遇酸生成易爆叠氮酸",
+    "reaction": "N3- + H+ -> HN3",
+    "rationale": "叠氮酸剧毒且对震动敏感易爆炸。",
+    "references": ["差异测试文献"],
+})
+check("创建测试规则 C010", s == 201, s)
+
+s, ra = call("POST", f"/api/plans/{pid3}/simulate?persist=true")
+run_a = ra["run_id"]
+check("第一次推演 danger", s == 200 and ra["status"] == "danger" and ra["blocked_steps"] == [2], (s, ra.get("status")))
+
+call("PATCH", "/api/rules/C010", {"severity": "medium"})
+s, rb = call("POST", f"/api/plans/{pid3}/simulate?persist=true")
+run_b = rb["run_id"]
+check("降级后第二次推演 warning", s == 200 and rb["status"] == "warning" and rb["blocked_steps"] == [], (s, rb.get("status")))
+
+s, d = call("GET", f"/api/runs/diff?base_id={run_a}&target_id={run_b}")
+check("差异接口 200", s == 200, s)
+check("方案一致才返回", d.get("plan_id") == pid3, d.get("plan_id"))
+check("两侧 run_id 正确", d["base"]["run_id"] == run_a and d["target"]["run_id"] == run_b)
+check("状态 danger->warning", d["summary"]["status"] == {"base": "danger", "target": "warning", "changed": True})
+check("首次危险消失", d["summary"]["first_danger"]["change"] == "removed")
+check("阻断步骤 [2] 消失", d["summary"]["blocked_steps"]["removed"] == [2])
+check("受影响步骤 [2] 消失", d["summary"]["affected_steps"]["removed"] == [2])
+fc = d["summary"]["finding_changes"]
+check("一条级别变化、无新增/消失", fc["severity"] == 1 and fc["added"] == 0 and fc["removed"] == 0, fc)
+sev_entries = [f for f in d["findings"] if f["change"] == "severity"]
+check("按步骤+规则对齐到 C010", len(sev_entries) == 1 and sev_entries[0]["rule_id"] == "C010"
+      and sev_entries[0]["base_severity"] == "high" and sev_entries[0]["target_severity"] == "medium",
+      sev_entries)
+check("条目含两侧反应依据", sev_entries[0]["base"]["reaction"].startswith("N3-")
+      and sev_entries[0]["target"]["rationale"].startswith("叠氮酸"), sev_entries)
+check("命中计数 high 减少 1", any(x["key"] == "high" and x["delta"] == -1 for x in d["summary"]["counts"]),
+      d["summary"]["counts"])
+
+call("PATCH", "/api/rules/C010", {"active": False})
+s, rc = call("POST", f"/api/plans/{pid3}/simulate?persist=true")
+run_c = rc["run_id"]
+check("停用后第三次推演 safe", s == 200 and rc["status"] == "safe", (s, rc.get("status")))
+
+s, d2 = call("GET", f"/api/runs/diff?base_id={run_b}&target_id={run_c}")
+check("停用规则：命中消失", s == 200 and d2["summary"]["finding_changes"]["removed"] == 1
+      and d2["summary"]["first_danger"]["change"] == "none"
+      and d2["summary"]["status"]["changed"] and d2["summary"]["status"]["target"] == "safe",
+      d2["summary"])
+rm = [f for f in d2["findings"] if f["change"] == "removed"]
+check("消失条目带规则 ID 与步骤", rm and rm[0]["rule_id"] == "C010" and rm[0]["incoming_step"] == 1, rm)
+
+# 重新启用（恢复 high）后改机理文案 → 与 run_a 相比级别一致、依据变化
+call("PATCH", "/api/rules/C010", {"active": True, "severity": "high"})
+call("PATCH", "/api/rules/C010", {"rationale": "叠氮酸剧毒且对震动敏感易爆炸；2026 修订：常压下沸点仅 37℃。"})
+s, rd = call("POST", f"/api/plans/{pid3}/simulate?persist=true")
+run_d = rd["run_id"]
+s, d3 = call("GET", f"/api/runs/diff?base_id={run_a}&target_id={run_d}")
+basis = [f for f in d3["findings"] if f["change"] == "basis"]
+check("级别不变机理变化 → basis", s == 200 and len(basis) == 1 and basis[0]["changed_fields"] == ["rationale"]
+      and basis[0]["base_severity"] == "high" and basis[0]["target_severity"] == "high", basis)
+check("两侧机理都可追溯", basis[0]["base"]["rationale"].startswith("叠氮酸剧毒")
+      and "2026 修订" in basis[0]["target"]["rationale"], basis)
+
+s, dexp = call("GET", f"/api/runs/diff/export?base_id={run_a}&target_id={run_b}")
+check("差异 JSON 可导出", s == 200 and dexp.get("kind") == "labmix-run-diff"
+      and dexp["base"]["run_id"] == run_a and dexp["target"]["run_id"] == run_b
+      and "findings" in dexp and "summary" in dexp, s)
+
+# 错误路径：同记录比较 / 记录缺失 / 跨方案
+s, e = call("GET", f"/api/runs/diff?base_id={run_a}&target_id={run_a}")
+check("同一条记录 400", s == 400, s)
+s, e = call("GET", f"/api/runs/diff?base_id={run_a}&target_id=999999")
+check("对照记录缺失 404", s == 404, s)
+s, e = call("GET", f"/api/runs/diff?base_id=999998&target_id={run_b}")
+check("基准记录缺失 404", s == 404, s)
+s, other = call("POST", "/api/plans/2/simulate?persist=true")
+run_other = other["run_id"]
+s, e = call("GET", f"/api/runs/diff?base_id={run_a}&target_id={run_other}")
+check("方案不一致 409", s == 409, s)
+s, e = call("GET", f"/api/runs/diff/export?base_id={run_a}&target_id={run_other}")
+check("导出接口同样拒绝跨方案 409", s == 409, s)
+s, e = call("GET", "/api/runs/diff")
+check("缺少参数 422", s == 422, s)
+
+call("DELETE", f"/api/plans/{pid3}")
+call("DELETE", f"/api/runs/C010")
+
 print(f"\n结果：{PASS} 通过，{FAIL} 失败")
 sys.exit(1 if FAIL else 0)

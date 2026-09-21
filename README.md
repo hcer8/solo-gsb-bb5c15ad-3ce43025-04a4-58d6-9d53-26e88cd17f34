@@ -9,7 +9,8 @@
 - 🔎 每条命中都附**可追溯判定依据**：规则编号、反应方程式、机理解释、匹配类别对、
   参与的加液步骤编号、参考文献、规则图版本号。
 
-支持方案保存、历史推演记录、一键**导出 JSON 结果**，规则图以 YAML 声明式维护并提供网页可视化。
+支持方案保存、历史推演记录、规则图升级后的**版本差异比对**，一键**导出 JSON 结果**，
+规则图以 YAML 声明式维护并提供网页可视化。
 
 > ⚠️ 本工具用于教学、方案预检与安全评审辅助，**不能替代**实验室 SOP、MSDS 与专业安全评估。
 
@@ -66,7 +67,11 @@ uvicorn app.main:app --reload --port 8000
    - 左侧**逐步时间轴**展示每一步是"相容 / 警示 / 严重 / 已阻断"；
    - 右侧列出全部**命中规则**，点击任意一条查看反应方程式、机理、参考文献与参与步骤。
 4. 点击 **导出 JSON** 下载完整推演报告；所有推演自动保存在 **🗂️ 推演记录** 中，可回溯、可再导出。
-5. 打开 **示例①「氰化物废液酸化处理（错误做法）」** 点「推演」，可看到第 2 步
+5. 在 **🗂️ 推演记录** 页顶部选择**同一方案**的两条记录（或先点记录上的「差异」按钮选入），
+   点 **🔍 比较版本差异**：系统按步骤编号 + 规则 ID 对齐两次命中，列出新增 / 消失 / 严重级别变化，
+   并汇总总体状态、首次危险、受影响 / 阻断步骤的变化；可用顶部筛选按变化类型或关键字过滤，并
+   **⬇ 导出差异 JSON**。仅允许比较同一方案，记录缺失或方案不一致会返回明确的 4xx 错误。
+6. 打开 **示例①「氰化物废液酸化处理（错误做法）」** 点「推演」，可看到第 2 步
    盐酸 + 氰化钾命中规则 `R001`（生成剧毒 HCN），推演立即中止，第 3 步被阻断。
 
 ---
@@ -163,7 +168,64 @@ uvicorn app.main:app --reload --port 8000
 
 ---
 
-## 五、HTTP API 速览
+## 五、版本差异视图（规则升级影响评估）
+
+当规则图升级（修改 `rules.yaml` 重启、网页停用/改级、追加自定义规则）后，对**同一方案**重新推演，
+即可在「🗂️ 推演记录」中比较新旧两条记录。对齐口径为
+
+```
+对齐键 = 加入步骤编号 incoming_step + 规则 ID rule_id
+         （同一步多条命中再按冲突步骤 existing_step 与类别对区分）
+```
+
+每个对齐位置归类为 `added`（新增命中）/ `removed`（消失命中）/ `severity`（严重级别变化）/
+`basis`（级别未变但标题、方程式、机理、文献、类别对、匹配方向等反应依据变化）/ `unchanged`（一致）；
+同时汇总：
+
+- **总体状态**：`safe / warning / danger` 及其是否变化；
+- **两次规则图版本号**；
+- **首次危险**：无 / 新增 / 消除 / 位置或规则变化（含两侧步骤、试剂、规则与方程式摘要）；
+- **受影响步骤 / 阻断步骤 / 警示步骤**：编号集合的新增与消失；
+- **逐步状态对齐表**与命中计数（总数及 high/medium/low）的增减。
+
+`GET /api/runs/diff?base_id={旧记录}&target_id={新记录}` 返回结构（摘要）：
+
+```json
+{
+  "kind": "labmix-run-diff",
+  "plan_id": 3, "plan_name": "……",
+  "base":   { "run_id": 7, "rule_revision": "2026.09", "status": "danger",  "created_at": "……" },
+  "target": { "run_id": 9, "rule_revision": "2026.10", "status": "warning", "created_at": "……" },
+  "summary": {
+    "status":         { "base": "danger", "target": "warning", "changed": true },
+    "rule_revision":  { "base": "2026.09", "target": "2026.10", "changed": true },
+    "first_danger":   { "change": "removed", "base": { "step": 1, "rule_id": "R001", "…": "…" }, "target": null },
+    "affected_steps": { "base": [1,2], "target": [1], "added": [], "removed": [2] },
+    "blocked_steps":  { "base": [2], "target": [], "added": [], "removed": [2] },
+    "steps":          { "items": [ { "step": 1, "base_state": "danger", "target_state": "warning", "change": "changed" } ] },
+    "counts":         [ { "key": "high", "label": "严重命中", "base": 1, "target": 0, "delta": -1 } ],
+    "finding_changes": { "added": 0, "removed": 0, "severity": 1, "basis": 0, "unchanged": 0 }
+  },
+  "findings": [
+    { "change": "severity", "rule_id": "R001", "incoming_step": 1, "existing_step": 0,
+      "base_severity": "high", "target_severity": "medium",
+      "basis_changed": false, "changed_fields": [],
+      "base":   { "rule_id": "R001", "severity": "high", "title": "…", "reaction": "…",
+                  "rationale": "…", "references": ["…"], "incoming_reagent": "盐酸", "…": "…" },
+      "target": { "rule_id": "R001", "severity": "medium", "…": "…" } }
+  ]
+}
+```
+
+`GET /api/runs/diff/export` 以相同结构返回，并附带
+`Content-Disposition: attachment; filename="runs-{base}-vs-{target}-diff.json"` 下载头。
+
+> 注意：差异比较只对**同一方案**有意义——方案步骤本身被修改会体现在"逐步状态对齐"表中，
+> 但 finding 的对齐仍以步骤编号与规则 ID 为准。记录所属方案被删除（`plan_id` 为空）时拒绝比较。
+
+---
+
+## 六、HTTP API 速览
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
@@ -178,12 +240,18 @@ uvicorn app.main:app --reload --port 8000
 | POST | `/api/rules` | 追加自定义规则 |
 | PATCH/DELETE | `/api/rules/{id}` | 启停 / 改级别（自定义规则可删） |
 | GET | `/api/runs[/{id}[/export]]` | 历史推演记录、详情、导出 |
+| GET | `/api/runs/diff?base_id=&target_id=` | 同一方案两条记录的**版本差异** |
+| GET | `/api/runs/diff/export?base_id=&target_id=` | 下载版本差异 JSON |
+
+**版本差异接口的 4xx 约定**：缺少参数 → `422`；两条记录 ID 相同 → `400`；
+任一记录不存在 → `404`（错误信息标明是基准还是对照记录）；
+两条记录不属于同一方案（含方案已删除、记录未关联方案）→ `409`。
 
 完整交互模型见 <http://localhost:8000/docs>。
 
 ---
 
-## 六、目录结构
+## 七、目录结构
 
 ```
 .
@@ -196,8 +264,9 @@ uvicorn app.main:app --reload --port 8000
 │   ├── rules_store.py      # 读取并同步 YAML 规则图
 │   ├── engine.py           # 相容性逐步推演引擎（核心算法）
 │   ├── deduce.py           # 方案 → 引擎输入 → 报告 → 落盘
+│   ├── diffing.py          # 两条历史记录的版本差异对齐与汇总
 │   ├── seed.py             # 内置试剂与示例方案
-│   └── routers/            # reagents / plans / rules / runs 路由
+│   └── routers/            # reagents / plans / rules / runs 路由（diff 在 runs 内）
 ├── data/
 │   └── rules.yaml          # 声明式规则图（类别 + 规则边）
 ├── web/                    # 原生 HTML/CSS/JS 界面（无构建步骤）
@@ -209,7 +278,7 @@ uvicorn app.main:app --reload --port 8000
 └── requirements.txt
 ```
 
-## 七、配置项
+## 八、配置项
 
 | 环境变量 | 默认 | 说明 |
 | --- | --- | --- |

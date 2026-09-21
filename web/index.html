@@ -181,6 +181,26 @@
     <!-- ========== 推演记录 ========== -->
     <section id="tab-runs" class="tab-panel">
       <div class="card">
+        <div class="card-head">
+          <h2>版本差异比较</h2>
+          <button class="btn btn-small" id="btnDiffSwap" title="交换基准与对照">⇄ 交换</button>
+        </div>
+        <p class="hint">仅允许比较<b>同一方案</b>的两条历史推演记录：系统按步骤编号与规则 ID 对齐命中，识别新增、消失与严重级别变化，并汇总状态、首次危险及受影响/阻断步骤的差异。</p>
+        <div class="diff-picker">
+          <label>基准记录（旧）
+            <select id="diffBase"></select>
+          </label>
+          <span class="diff-arrow">→</span>
+          <label>对照记录（新）
+            <select id="diffTarget"></select>
+          </label>
+          <button class="btn btn-primary" id="btnRunDiff">🔍 比较版本差异</button>
+          <button class="btn hidden" id="btnExportDiff">⬇ 导出差异 JSON</button>
+        </div>
+      </div>
+      <div id="diffDetail"></div>
+
+      <div class="card">
         <div class="card-head"><h2>历史推演记录</h2></div>
         <ul class="item-list" id="runList"></ul>
       </div>
