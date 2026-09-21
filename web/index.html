@@ -181,10 +181,19 @@
     <!-- ========== 推演记录 ========== -->
     <section id="tab-runs" class="tab-panel">
       <div class="card">
-        <div class="card-head"><h2>历史推演记录</h2></div>
+        <div class="card-head">
+          <h2>历史推演记录</h2>
+          <span class="hint" style="margin:0">勾选同一方案的任意两条记录，即可对比两次规则版本的命中差异</span>
+        </div>
+        <div class="diff-toolbar">
+          <span class="diff-select-info" id="diffSelectInfo">未选择记录</span>
+          <button class="btn btn-primary btn-small" id="btnCompareRuns" disabled>🔍 比较版本差异</button>
+          <button class="btn btn-ghost btn-small" id="btnClearCompare">清空选择</button>
+        </div>
         <ul class="item-list" id="runList"></ul>
       </div>
       <div id="runDetail"></div>
+      <div id="runDiff" class="hidden"></div>
     </section>
   </main>
 

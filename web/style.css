@@ -341,3 +341,78 @@ textarea { resize: vertical; }
   font-size: 13px; z-index: 100; opacity: .96; box-shadow: 0 6px 20px rgba(0,0,0,.3);
 }
 .toast.err { background: var(--high); }
+
+/* ---------- 版本差异 ---------- */
+.diff-toolbar {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  border: 1px dashed var(--line); border-radius: 8px;
+  padding: 8px 12px; margin-bottom: 12px; background: #fbfcfe;
+}
+.diff-select-info { font-size: 13px; color: var(--ink-soft); flex: 1; min-width: 180px; }
+.diff-check { width: auto; margin: 0 4px 0 0; cursor: pointer; }
+#btnCompareRuns:disabled { opacity: .5; cursor: not-allowed; }
+
+.diff-sides {
+  display: grid; grid-template-columns: 1fr auto 1fr;
+  gap: 14px; align-items: stretch;
+}
+.diff-side { border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; background: #fff; }
+.diff-side.old { border-left: 4px solid var(--blocked); background: #f9fafb; }
+.diff-side.new { border-left: 4px solid var(--brand); background: var(--brand-soft); }
+.ds-label { font-weight: 700; font-size: 13.5px; }
+.ds-rev { font-size: 13px; margin-top: 4px; font-weight: 600; }
+.ds-meta { font-size: 12.5px; color: var(--ink-soft); margin: 2px 0 8px; }
+.diff-arrow { align-self: center; font-size: 22px; color: var(--brand); font-weight: 700; }
+@media (max-width: 720px) { .diff-sides { grid-template-columns: 1fr; } .diff-arrow { transform: rotate(90deg); } }
+
+.diff-summary-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px;
+}
+.diff-sum-cell {
+  border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; background: #fff;
+}
+.diff-sum-cell.changed { border-color: #fcd34d; background: var(--medium-bg); }
+.diff-sum-cell.rich { grid-column: span 2; }
+@media (max-width: 720px) { .diff-sum-cell.rich { grid-column: span 1; } }
+.dsc-title { font-size: 12.5px; font-weight: 700; color: var(--ink-soft); margin-bottom: 6px; }
+.dsc-old, .dsc-new { font-size: 13px; }
+.dsc-arrow { color: var(--ink-soft); font-size: 11px; margin: 2px 0; }
+.dsc-delta { font-size: 12px; color: var(--medium); margin-top: 4px; }
+.dim-text { color: var(--blocked); }
+
+.diff-filters { display: flex; gap: 6px; flex-wrap: wrap; }
+.diff-filter { border-radius: 999px; }
+.diff-filter.active { background: var(--brand); border-color: var(--brand); color: #fff; }
+
+.diff-count-bar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.diff-mini {
+  display: inline-block; border-radius: 999px; padding: 2px 10px;
+  font-size: 12px; font-weight: 600; border: 1px solid;
+}
+.diff-mini.added { color: var(--high); background: var(--high-bg); border-color: #fecaca; }
+.diff-mini.removed { color: var(--ok); background: var(--ok-bg); border-color: #bbf7d0; }
+.diff-mini.sev { color: var(--medium); background: var(--medium-bg); border-color: #fde68a; }
+.diff-mini.same { color: var(--blocked); background: #f3f4f6; border-color: #e5e7eb; }
+.diff-mini.changed { color: var(--medium); background: var(--medium-bg); border-color: #fde68a; }
+
+/* 差异 finding 卡片：左条颜色 = 变化类型 */
+.diff-finding-card { border-left-width: 4px; }
+.diff-finding-card.added { border-left-color: var(--high); background: var(--high-bg); }
+.diff-finding-card.removed { border-left-color: var(--ok); background: var(--ok-bg); }
+.diff-finding-card.severity_changed { border-left-color: var(--medium); background: var(--medium-bg); }
+.diff-finding-card.unchanged { opacity: .8; }
+.diff-tag {
+  display: inline-block; border-radius: 4px; font-size: 11.5px;
+  font-weight: 700; padding: 1px 8px; margin-right: 4px; border: 1px solid;
+}
+.diff-tag.added { color: #fff; background: var(--high); border-color: var(--high); }
+.diff-tag.removed { color: #fff; background: var(--ok); border-color: var(--ok); }
+.diff-tag.severity_changed { color: #fff; background: var(--medium); border-color: var(--medium); }
+.diff-tag.unchanged { color: var(--blocked); background: #f3f4f6; border-color: #e5e7eb; }
+.diff-sev-row { display: flex; align-items: center; gap: 10px; margin-top: 6px; font-size: 12.5px; }
+.diff-sev-arrow { color: var(--ink-soft); }
+.diff-reaction { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; }
+.diff-rationale { color: var(--brand); cursor: pointer; }
+
+.diff-steps-table tr.row-changed { background: var(--medium-bg); }
+.diff-steps-table tr.row-changed td { font-weight: 600; }

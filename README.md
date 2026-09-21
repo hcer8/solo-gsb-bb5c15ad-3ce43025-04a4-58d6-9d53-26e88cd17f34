@@ -9,7 +9,8 @@
 - 🔎 每条命中都附**可追溯判定依据**：规则编号、反应方程式、机理解释、匹配类别对、
   参与的加液步骤编号、参考文献、规则图版本号。
 
-支持方案保存、历史推演记录、一键**导出 JSON 结果**，规则图以 YAML 声明式维护并提供网页可视化。
+支持方案保存、历史推演记录、**同一方案两次推演的版本差异比对**（规则版本升级后新增/消失/级别变化的命中一目了然），
+一键**导出 JSON 结果**，规则图以 YAML 声明式维护并提供网页可视化。
 
 > ⚠️ 本工具用于教学、方案预检与安全评审辅助，**不能替代**实验室 SOP、MSDS 与专业安全评估。
 
@@ -68,6 +69,10 @@ uvicorn app.main:app --reload --port 8000
 4. 点击 **导出 JSON** 下载完整推演报告；所有推演自动保存在 **🗂️ 推演记录** 中，可回溯、可再导出。
 5. 打开 **示例①「氰化物废液酸化处理（错误做法）」** 点「推演」，可看到第 2 步
    盐酸 + 氰化钾命中规则 `R001`（生成剧毒 HCN），推演立即中止，第 3 步被阻断。
+6. **版本差异**：规则图维护（改级别 / 停用 / 追加新规则）前后，分别对同一方案各推演一次；
+   在 **🗂️ 推演记录** 中勾选这两条记录 →「🔍 比较版本差异」，即可查看两次规则版本之间
+   新增 / 消失 / 严重级别变化的命中（按步骤编号 + 规则 ID 对齐），以及整体状态、首次危险、
+   受影响/阻断步骤与逐步状态的汇总变化；列表可按变化类型筛选，并可**导出差异 JSON**。
 
 ---
 
@@ -163,7 +168,59 @@ uvicorn app.main:app --reload --port 8000
 
 ---
 
-## 五、HTTP API 速览
+## 五、版本差异 JSON 结构
+
+在「推演记录」中选择同一方案的两条记录（或调用）：
+
+```
+GET /api/runs/diff?base=<旧记录ID>&target=<新记录ID>[&export=true]
+```
+
+服务端自动按记录创建时间归一化为「旧 → 新」方向，命中按 `incoming_step + rule_id + existing_step`
+对齐（同一规则在同一步可能与多个已加入试剂配对），返回：
+
+```json
+{
+  "kind": "labmix-run-diff",
+  "plan_id": 1,
+  "plan_name": "示例①氰化物废液酸化处理（错误做法）",
+  "base":   { "run_id": 10, "rule_revision": "2026.09", "status": "danger",  "status_label": "存在严重危险", "created_at": "…" },
+  "target": { "run_id": 12, "rule_revision": "2026.10", "status": "warning", "status_label": "存在警示",     "created_at": "…" },
+  "has_changes": true,
+  "status_change": { "changed": true, "trend": "improved", "base": "danger", "target": "warning", "base_label": "…", "target_label": "…" },
+  "first_danger_change": {
+    "changed": true,
+    "base":   { "step": 1, "rule_id": "R001", "title": "…" },
+    "target": null
+  },
+  "affected_steps_change": { "name": "affected_steps", "base": [1, 2], "target": [1], "added": [], "removed": [2], "changed": true },
+  "blocked_steps_change":  { "base": [2], "target": [], "added": [], "removed": [2], "changed": true },
+  "warning_steps_change":  { "base": [],  "target": [1], "added": [1], "removed": [], "changed": true },
+  "summary_changes": { "findings": { "base": 1, "target": 1, "delta": 0 }, "high": {"base":1,"target":0,"delta":-1}, "…": "…" },
+  "steps": [
+    { "order_index": 1, "base_state": "danger", "target_state": "warning",
+      "base_state_label": "发生严重反应", "target_state_label": "发生警示反应", "changed": true }
+  ],
+  "findings": [
+    {
+      "change": "severity_changed",          // added 新增命中 | removed 命中消失 | severity_changed | unchanged
+      "change_label": "严重级别变化",
+      "rule_id": "R001", "step": 1, "conflicts_with_step": 0,
+      "incoming_reagent": "盐酸", "existing_reagent": "氰化钾",
+      "base":   { "id": "F001", "severity": "high",   "reaction": "…", "rationale": "…", "references": ["…"] },
+      "target": { "id": "F001", "severity": "medium", "reaction": "…", "rationale": "…", "references": ["…"] }
+    }
+  ],
+  "counts": { "added": 0, "removed": 0, "severity_changed": 1, "unchanged": 0 }
+}
+```
+
+错误约定：任一记录不存在 → `404`；两条记录不属于同一方案 → `409`；
+`base == target` 或记录无关联方案 → `422`。预检（不保存）产生的记录无方案归属，不能参与比较。
+
+---
+
+## 六、HTTP API 速览
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
@@ -178,12 +235,13 @@ uvicorn app.main:app --reload --port 8000
 | POST | `/api/rules` | 追加自定义规则 |
 | PATCH/DELETE | `/api/rules/{id}` | 启停 / 改级别（自定义规则可删） |
 | GET | `/api/runs[/{id}[/export]]` | 历史推演记录、详情、导出 |
+| GET | `/api/runs/diff?base=&target=[&export=true]` | 同一方案两条记录的版本差异（404 缺失 / 409 方案不一致 / 422 参数不合法） |
 
 完整交互模型见 <http://localhost:8000/docs>。
 
 ---
 
-## 六、目录结构
+## 七、目录结构
 
 ```
 .
@@ -196,8 +254,9 @@ uvicorn app.main:app --reload --port 8000
 │   ├── rules_store.py      # 读取并同步 YAML 规则图
 │   ├── engine.py           # 相容性逐步推演引擎（核心算法）
 │   ├── deduce.py           # 方案 → 引擎输入 → 报告 → 落盘
+│   ├── diff.py             # 同一方案两条记录的版本差异对齐与汇总
 │   ├── seed.py             # 内置试剂与示例方案
-│   └── routers/            # reagents / plans / rules / runs 路由
+│   └── routers/            # reagents / plans / rules / runs 路由（runs 含 /diff）
 ├── data/
 │   └── rules.yaml          # 声明式规则图（类别 + 规则边）
 ├── web/                    # 原生 HTML/CSS/JS 界面（无构建步骤）
@@ -209,7 +268,7 @@ uvicorn app.main:app --reload --port 8000
 └── requirements.txt
 ```
 
-## 七、配置项
+## 八、配置项
 
 | 环境变量 | 默认 | 说明 |
 | --- | --- | --- |
